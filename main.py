@@ -1,327 +1,391 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Telegram Submission Bot - 投稿机器人
+Rewritten for python-telegram-bot 20.x
+Original: https://github.com/Netrvin/telegram-submission-bot
+"""
 
-import time
 import json
-import telegram.ext
-import telegram
-import sys
-import datetime
 import os
 import logging
-import threading
-import six
+import asyncio
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+)
+from telegram.ext import (
+    Application, MessageHandler, CommandHandler,
+    CallbackQueryHandler, filters, ContextTypes
+)
+from telegram.constants import ParseMode
 
-if six.PY2:
-    reload(sys)
-    sys.setdefaultencoding('utf8')
+Version_Code = 'v2.0.0'
 
-Version_Code = 'v1.0.0'
-
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-                    )
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 PATH = os.path.dirname(os.path.realpath(__file__)) + '/'
 
-CONFIG = json.loads(open(PATH + 'config.json', 'r').read())
+# Load config
+with open(PATH + 'config.json', 'r') as f:
+    CONFIG = json.load(f)
 
-DATA_LOCK = False
-
-submission_list = json.loads(open(PATH + 'data.json', 'r').read())
+# Load data
+with open(PATH + 'data.json', 'r') as f:
+    submission_list = json.load(f)
 
 
 def save_data():
-    global DATA_LOCK
-    while DATA_LOCK:
-        time.sleep(0.05)
-    DATA_LOCK = True
-    f = open(PATH + 'data.json', 'w')
-    f.write(json.dumps(submission_list, ensure_ascii=False))
-    f.close()
-    DATA_LOCK = False
+    with open(PATH + 'data.json', 'w') as f:
+        json.dump(submission_list, f, ensure_ascii=False)
 
 
 def save_config():
-    f = open(PATH + 'config.json', 'w')
-    f.write(json.dumps(CONFIG, indent=4))
-    f.close()
+    with open(PATH + 'config.json', 'w', encoding='utf-8') as f:
+        json.dump(CONFIG, f, indent=4, ensure_ascii=False)
 
 
-updater = telegram.ext.Updater(token=CONFIG['Token'])
-dispatcher = updater.dispatcher
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_text(
+        "欢迎使用投稿机器人！\n\n"
+        "可接收的投稿类型:\n"
+        "• 文字\n"
+        "• 图片\n"
+        "• 音频/语音\n"
+        "• 视频\n"
+        "• 文件\n\n"
+        "直接发送消息即可投稿。"
+    )
 
-me = updater.bot.get_me()
-CONFIG['ID'] = me.id
-CONFIG['Username'] = '@' + me.username
 
-print('Starting... (ID: ' + str(CONFIG['ID']) + ', Username: ' + CONFIG['Username'] + ')')
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /version command"""
+    await update.message.reply_text(
+        f"Telegram Submission Bot\n{Version_Code}\n"
+        "https://github.com/Netrvin/telegram-submission-bot"
+    )
 
 
-def process_msg(bot, update):
-    if update.channel_post != None:
+async def setgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /setgroup command - set review group"""
+    if update.message.from_user.id != CONFIG['Admin']:
         return
-    if update.message.chat_id == CONFIG['Group_ID'] \
-        and update.message.reply_to_message != None:
-        if update.message.reply_to_message.from_user.id == CONFIG['ID'] \
-            and (update.message.reply_to_message.forward_from != None
-                 or update.message.reply_to_message.forward_from_chat
-                 != None):
-            msg = update.message.reply_to_message
-            global submission_list
-            if submission_list[str(CONFIG['Group_ID']) + ':'
-                               + str(msg.message_id)]['posted'] == True:
-                return
-            if submission_list[str(CONFIG['Group_ID']) + ':'
-                               + str(msg.message_id)]['type'] == 'real':
-                post = real_name_post(bot, msg,
-                        update.message.from_user)
-            elif submission_list[str(CONFIG['Group_ID']) + ':'
-                                 + str(msg.message_id)]['type'] \
-                == 'anonymous':
-
-                post = anonymous_post(bot, msg,
-                        update.message.from_user)
-            if update.message.text != None:
-                bot.send_message(chat_id=CONFIG['Publish_Channel_ID'],
-                                 text=update.message.text,
-                                 reply_to_message_id=post.message_id)
-            return
-    if update.message.from_user.id == update.message.chat_id:
-        markup = \
-            telegram.InlineKeyboardMarkup([[telegram.InlineKeyboardButton("是"
-                , callback_data='submission_type:real'),
-                telegram.InlineKeyboardButton("否",
-                callback_data='submission_type:anonymous')],
-                [telegram.InlineKeyboardButton("取消投稿",
-                callback_data='cancel:submission')]])
-        if update.message.forward_from != None \
-            or update.message.forward_from_chat != None:
-            if update.message.forward_from_chat != None:
-                markup = \
-                    telegram.InlineKeyboardMarkup([[telegram.InlineKeyboardButton("是"
-                        , callback_data='submission_type:real')],
-                        [telegram.InlineKeyboardButton("取消投稿",
-                        callback_data='cancel:submission')]])
-            elif update.message.forward_from.id \
-                != update.message.from_user.id:
-                markup = \
-                    telegram.InlineKeyboardMarkup([[telegram.InlineKeyboardButton("是"
-                        , callback_data='submission_type:real')],
-                        [telegram.InlineKeyboardButton("取消投稿",
-                        callback_data='cancel:submission')]])
-        bot.send_message(chat_id=update.message.chat_id,
-                         text="即将完成投稿...\n⁠您是否想要保留消息来源(保留消息发送者用户名)",
-                         reply_to_message_id=update.message.message_id,
-                         reply_markup=markup)
+    CONFIG['Group_ID'] = update.message.chat_id
+    save_config()
+    await update.message.reply_text("✅ 已设置本群为审稿群")
 
 
-def process_command(bot, update):
-    if update.channel_post != None:
-        return
-    command = update.message.text[1:].replace(CONFIG['Username'], ''
-            ).lower()
-    if command == 'start':
-        bot.send_message(chat_id=update.message.chat_id,
-                         text="""可接收的投稿类型:
-文字
-图片
-音频/语音
-视频
-文件""")
-        return
-    if command == 'version':
-        bot.send_message(chat_id=update.message.chat_id,
-                         text='Telegram Submission Bot\n'
-                         + Version_Code
-                         + '\nhttps://github.com/Netrvin/telegram-submission-bot'
-                         )
-        return
-    if update.message.from_user.id == CONFIG['Admin']:
-        if command == 'setgroup':
-            CONFIG['Group_ID'] = update.message.chat_id
-            save_config()
-            bot.send_message(chat_id=update.message.chat_id,
-                             text="已设置本群为审稿群")
-            return
-
-
-def anonymous_post(bot, msg, editor):
-    if msg.audio != None:
-        r = bot.send_audio(chat_id=CONFIG['Publish_Channel_ID'],
-                           audio=msg.audio, caption=msg.caption)
-    elif msg.document != None:
-        r = bot.send_document(chat_id=CONFIG['Publish_Channel_ID'],
-                              document=msg.document,
-                              caption=msg.caption)
-    elif msg.voice != None:
-        r = bot.send_voice(chat_id=CONFIG['Publish_Channel_ID'],
-                           voice=msg.voice, caption=msg.caption)
-    elif msg.video != None:
-        r = bot.send_video(chat_id=CONFIG['Publish_Channel_ID'],
-                           video=msg.video, caption=msg.caption)
-    elif msg.photo:
-        r = bot.send_photo(chat_id=CONFIG['Publish_Channel_ID'],
-                           photo=msg.photo[0], caption=msg.caption)
-    else:
-        r = bot.send_message(chat_id=CONFIG['Publish_Channel_ID'],
-                             text=msg.text_markdown,
-                             parse_mode=telegram.ParseMode.MARKDOWN)
-
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(msg.message_id)]['posted'] = True
-    bot.edit_message_text(text="新投稿\n投稿人: ["
-                          + submission_list[str(CONFIG['Group_ID'])
-                          + ':' + str(msg.message_id)]['Sender_Name']
-                          + '](tg://user?id='
-                          + str(submission_list[str(CONFIG['Group_ID'])
-                          + ':' + str(msg.message_id)]['Sender_ID'])
-                          + """)
-来源: 保留
-审稿人: [""" + editor.name
-                          + '](tg://user?id=' + str(editor.id)
-                          + ")\n已采用", chat_id=CONFIG['Group_ID'],
-                          parse_mode=telegram.ParseMode.MARKDOWN,
-                          message_id=submission_list[str(CONFIG['Group_ID'
-                          ]) + ':' + str(msg.message_id)]['Markup_ID'])
-    bot.send_message(chat_id=submission_list[str(CONFIG['Group_ID'])
-                     + ':' + str(msg.message_id)]['Sender_ID'],
-                     text="您的稿件已过审，感谢您对我们的支持",
-                     reply_to_message_id=submission_list[str(CONFIG['Group_ID'
-                     ]) + ':' + str(msg.message_id)]['Original_MsgID'])
-    threading.Thread(target=save_data).start()
-    return r
-
-
-def real_name_post(bot, msg, editor):
+async def anonymous_post(context: ContextTypes.DEFAULT_TYPE, msg, editor, group_id):
+    """Post submission anonymously"""
     global submission_list
-    r = bot.forward_message(chat_id=CONFIG['Publish_Channel_ID'],
-                            from_chat_id=CONFIG['Group_ID'],
-                            message_id=msg.message_id)
+    key = f"{group_id}:{msg.message_id}"
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(msg.message_id)]['posted'] = True
-    bot.edit_message_text(text="新投稿\n投稿人: ["
-                          + submission_list[str(CONFIG['Group_ID'])
-                          + ':' + str(msg.message_id)]['Sender_Name']
-                          + '](tg://user?id='
-                          + str(submission_list[str(CONFIG['Group_ID'])
-                          + ':' + str(msg.message_id)]['Sender_ID'])
-                          + """)
-来源: 保留
-审稿人: [""" + editor.name
-                          + '](tg://user?id=' + str(editor.id)
-                          + ")\n已采用", chat_id=CONFIG['Group_ID'],
-                          parse_mode=telegram.ParseMode.MARKDOWN,
-                          message_id=submission_list[str(CONFIG['Group_ID'
-                          ]) + ':' + str(msg.message_id)]['Markup_ID'])
-    bot.send_message(chat_id=submission_list[str(CONFIG['Group_ID'])
-                     + ':' + str(msg.message_id)]['Sender_ID'],
-                     text="您的稿件已过审，感谢您对我们的支持",
-                     reply_to_message_id=submission_list[str(CONFIG['Group_ID'
-                     ]) + ':' + str(msg.message_id)]['Original_MsgID'])
-    threading.Thread(target=save_data).start()
+    if msg.audio:
+        r = await context.bot.send_audio(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            audio=msg.audio.file_id, caption=msg.caption
+        )
+    elif msg.document:
+        r = await context.bot.send_document(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            document=msg.document.file_id, caption=msg.caption
+        )
+    elif msg.voice:
+        r = await context.bot.send_voice(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            voice=msg.voice.file_id, caption=msg.caption
+        )
+    elif msg.video:
+        r = await context.bot.send_video(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            video=msg.video.file_id, caption=msg.caption
+        )
+    elif msg.photo:
+        r = await context.bot.send_photo(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            photo=msg.photo[-1].file_id, caption=msg.caption
+        )
+    else:
+        r = await context.bot.send_message(
+            chat_id=CONFIG['Publish_Channel_ID'],
+            text=msg.text or ""
+        )
+
+    submission_list[key]['posted'] = True
+
+    sender_name = submission_list[key]['Sender_Name']
+    sender_id = submission_list[key]['Sender_ID']
+    markup_id = submission_list[key]['Markup_ID']
+
+    await context.bot.edit_message_text(
+        text=f"新投稿\n投稿人: [{sender_name}](tg://user?id={sender_id})\n"
+             f"来源: 匿名\n审稿人: [{editor.full_name}](tg://user?id={editor.id})\n✅ 已采用",
+        chat_id=group_id,
+        message_id=markup_id,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=sender_id,
+            text="✅ 您的稿件已过审，感谢您对我们的支持！",
+            reply_to_message_id=submission_list[key]['Original_MsgID']
+        )
+    except Exception:
+        pass
+
+    save_data()
     return r
 
 
-def process_callback(bot, update):
-    if update.channel_post != None:
+async def real_name_post(context: ContextTypes.DEFAULT_TYPE, msg, editor, group_id):
+    """Post submission with source"""
+    global submission_list
+    key = f"{group_id}:{msg.message_id}"
+
+    r = await context.bot.forward_message(
+        chat_id=CONFIG['Publish_Channel_ID'],
+        from_chat_id=group_id,
+        message_id=msg.message_id
+    )
+
+    submission_list[key]['posted'] = True
+
+    sender_name = submission_list[key]['Sender_Name']
+    sender_id = submission_list[key]['Sender_ID']
+    markup_id = submission_list[key]['Markup_ID']
+
+    await context.bot.edit_message_text(
+        text=f"新投稿\n投稿人: [{sender_name}](tg://user?id={sender_id})\n"
+             f"来源: 保留\n审稿人: [{editor.full_name}](tg://user?id={editor.id})\n✅ 已采用",
+        chat_id=group_id,
+        message_id=markup_id,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=sender_id,
+            text="✅ 您的稿件已过审，感谢您对我们的支持！",
+            reply_to_message_id=submission_list[key]['Original_MsgID']
+        )
+    except Exception:
+        pass
+
+    save_data()
+    return r
+
+
+async def process_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming messages"""
+    if update.channel_post is not None:
         return
+    if update.message is None:
+        return
+
+    msg = update.message
+
+    # Message in review group - reply to forwarded submission = comment + approve
+    if msg.chat_id == CONFIG['Group_ID'] and msg.reply_to_message is not None:
+        reply = msg.reply_to_message
+        if reply.from_user and reply.from_user.id == CONFIG.get('ID', 0):
+            key = f"{CONFIG['Group_ID']}:{reply.message_id}"
+            if key in submission_list and not submission_list[key].get('posted', False):
+                if submission_list[key]['type'] == 'real':
+                    post = await real_name_post(context, reply, msg.from_user, CONFIG['Group_ID'])
+                else:
+                    post = await anonymous_post(context, reply, msg.from_user, CONFIG['Group_ID'])
+                # Send comment if any
+                if msg.text:
+                    await context.bot.send_message(
+                        chat_id=CONFIG['Publish_Channel_ID'],
+                        text=msg.text,
+                        reply_to_message_id=post.message_id
+                    )
+        return
+
+    # Private message = submission
+    if msg.from_user.id == msg.chat_id:
+        # Determine if we can offer anonymous option
+        can_anonymous = True
+        # In python-telegram-bot 22.x, forward_from is replaced by forward_origin
+        forward_origin = getattr(msg, 'forward_origin', None)
+        if forward_origin is not None:
+            from telegram import MessageOriginUser, MessageOriginChat, MessageOriginChannel
+            if isinstance(forward_origin, (MessageOriginChat, MessageOriginChannel)):
+                can_anonymous = False
+            elif isinstance(forward_origin, MessageOriginUser):
+                if forward_origin.sender_user.id != msg.from_user.id:
+                    can_anonymous = False
+
+        # Encode original message_id into callback_data so we can retrieve it later
+        mid = msg.message_id
+        if can_anonymous:
+            markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("是", callback_data=f'submission_type:real:{mid}'),
+                    InlineKeyboardButton("否", callback_data=f'submission_type:anonymous:{mid}')
+                ],
+                [InlineKeyboardButton("取消投稿", callback_data='cancel:submission')]
+            ])
+        else:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("是", callback_data=f'submission_type:real:{mid}')],
+                [InlineKeyboardButton("取消投稿", callback_data='cancel:submission')]
+            ])
+
+        await msg.reply_text(
+            "即将完成投稿...\n您是否想要保留消息来源（保留消息发送者用户名）？",
+            reply_markup=markup
+        )
+
+
+async def process_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle callback queries"""
     global submission_list
     query = update.callback_query
-    if query.message.chat_id == CONFIG['Group_ID'] and query.data \
-        == 'receive:real':
-        real_name_post(bot, query.message.reply_to_message,
-                       query.from_user)
-        return
-    if query.message.chat_id == CONFIG['Group_ID'] and query.data \
-        == 'receive:anonymous':
-        anonymous_post(bot, query.message.reply_to_message,
-                       query.from_user)
-        return
+    await query.answer()
+
+    # Review group - approve button
+    if query.message.chat_id == CONFIG['Group_ID']:
+        if query.data == 'receive:real':
+            await real_name_post(context, query.message.reply_to_message, query.from_user, CONFIG['Group_ID'])
+            return
+        if query.data == 'receive:anonymous':
+            await anonymous_post(context, query.message.reply_to_message, query.from_user, CONFIG['Group_ID'])
+            return
+        if query.data in ('reject:real', 'reject:anonymous'):
+            # Find the submission in the list
+            rejected = None
+            for k, v in submission_list.items():
+                if v.get('Markup_ID') == query.message.message_id:
+                    rejected = v
+                    break
+            # Notify the user
+            if rejected and rejected.get('Sender_ID'):
+                try:
+                    await context.bot.send_message(
+                        chat_id=rejected['Sender_ID'],
+                        text="❌ 很抱歉，您的投稿未通过审核。"
+                    )
+                except Exception:
+                    pass
+            # Update the review message
+            await query.edit_message_text("❌ 已拒绝该投稿")
+            # Remove from submission list
+            if rejected:
+                for k, v in list(submission_list.items()):
+                    if v.get('Markup_ID') == query.message.message_id:
+                        del submission_list[k]
+                        break
+                save_data()
+            return
+
+    # Cancel submission
     if query.data == 'cancel:submission':
-        bot.edit_message_text(text="已取消投稿",
-                              chat_id=query.message.chat_id,
-                              message_id=query.message.message_id)
+        await query.edit_message_text("已取消投稿")
         return
-    msg = "新投稿\n投稿人: [" + query.message.reply_to_message.from_user.name \
-        + '](tg://user?id=' \
-        + str(query.message.reply_to_message.from_user.id) + ")\n来源: "
-    fwd_msg = bot.forward_message(chat_id=CONFIG['Group_ID'],
-                                  from_chat_id=query.message.chat_id,
-                                  message_id=query.message.reply_to_message.message_id)
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(fwd_msg.message_id)] = {}
+    # User chose submission type - forward to review group
+    if CONFIG['Group_ID'] == 0:
+        await query.edit_message_text("❌ 审稿群未设置，请联系管理员")
+        return
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(fwd_msg.message_id)]['posted'] = False
+    # Parse callback_data: 'submission_type:real:msg_id' or 'submission_type:anonymous:msg_id'
+    parts = query.data.split(':')
+    if len(parts) < 3:
+        await query.edit_message_text("❌ 数据错误，请重新投稿")
+        return
+    sub_type = parts[1]  # 'real' or 'anonymous'
+    original_msg_id = int(parts[2])
+    sender = query.from_user
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(fwd_msg.message_id)]['Sender_Name'] = \
-        query.message.reply_to_message.from_user.name
+    # Forward to review group
+    fwd_msg = await context.bot.forward_message(
+        chat_id=CONFIG['Group_ID'],
+        from_chat_id=query.message.chat_id,
+        message_id=original_msg_id
+    )
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(fwd_msg.message_id)]['Sender_ID'] = \
-        query.message.reply_to_message.from_user.id
+    key = f"{CONFIG['Group_ID']}:{fwd_msg.message_id}"
 
-    submission_list[str(CONFIG['Group_ID']) + ':'
-                    + str(fwd_msg.message_id)]['Original_MsgID'] = \
-        query.message.reply_to_message.message_id
+    submission_list[key] = {
+        'posted': False,
+        'Sender_Name': sender.full_name,
+        'Sender_ID': sender.id,
+        'Original_MsgID': original_msg_id,
+    }
 
-    if query.data == 'submission_type:real':
-        msg += "保留"
+    msg_text = f"新投稿\n投稿人: [{sender.full_name}](tg://user?id={sender.id})\n来源: "
 
-        submission_list[str(CONFIG['Group_ID']) + ':'
-                        + str(fwd_msg.message_id)]['type'] = 'real'
-        markup = \
-            telegram.InlineKeyboardMarkup([[telegram.InlineKeyboardButton("采用"
-                , callback_data='receive:real')]])
-        markup_msg = bot.send_message(chat_id=CONFIG['Group_ID'],
-                text=msg, reply_to_message_id=fwd_msg.message_id,
-                reply_markup=markup,
-                parse_mode=telegram.ParseMode.MARKDOWN)
+    if sub_type == 'real':
+        msg_text += "保留"
+        submission_list[key]['type'] = 'real'
+        markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ 采用", callback_data='receive:real'),
+                InlineKeyboardButton("❌ 拒绝", callback_data='reject:real')
+            ]
+        ])
+    elif sub_type == 'anonymous':
+        msg_text += "匿名"
+        submission_list[key]['type'] = 'anonymous'
+        markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ 采用", callback_data='receive:anonymous'),
+                InlineKeyboardButton("❌ 拒绝", callback_data='reject:anonymous')
+            ]
+        ])
+    else:
+        return
 
-        submission_list[str(CONFIG['Group_ID']) + ':'
-                        + str(fwd_msg.message_id)]['Markup_ID'] = \
-            markup_msg.message_id
-    elif query.data == 'submission_type:anonymous':
-        msg += "匿名"
+    markup_msg = await context.bot.send_message(
+        chat_id=CONFIG['Group_ID'],
+        text=msg_text,
+        reply_to_message_id=fwd_msg.message_id,
+        reply_markup=markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-        submission_list[str(CONFIG['Group_ID']) + ':'
-                        + str(fwd_msg.message_id)]['type'] = 'anonymous'
-        markup = \
-            telegram.InlineKeyboardMarkup([[telegram.InlineKeyboardButton("采用"
-                , callback_data='receive:anonymous')]])
-        markup_msg = bot.send_message(chat_id=CONFIG['Group_ID'],
-                text=msg, reply_to_message_id=fwd_msg.message_id,
-                reply_markup=markup,
-                parse_mode=telegram.ParseMode.MARKDOWN)
+    submission_list[key]['Markup_ID'] = markup_msg.message_id
 
-        submission_list[str(CONFIG['Group_ID']) + ':'
-                        + str(fwd_msg.message_id)]['Markup_ID'] = \
-            markup_msg.message_id
-    bot.edit_message_text(text="感谢您的投稿", chat_id=query.message.chat_id,
-                          message_id=query.message.message_id)
-    threading.Thread(target=save_data).start()
+    await query.edit_message_text("✅ 感谢您的投稿，请等待审核")
+    save_data()
 
 
-dispatcher.add_handler(telegram.ext.MessageHandler(telegram.ext.Filters.text
-                       | telegram.ext.Filters.audio
-                       | telegram.ext.Filters.photo
-                       | telegram.ext.Filters.video
-                       | telegram.ext.Filters.voice
-                       | telegram.ext.Filters.document, process_msg))
+def main():
+    """Start the bot"""
+    app = Application.builder().token(CONFIG['Token']).build()
 
-dispatcher.add_handler(telegram.ext.MessageHandler(telegram.ext.Filters.command,
-                       process_command))
+    # Store bot ID in config
+    async def post_init(application):
+        bot_info = await application.bot.get_me()
+        CONFIG['ID'] = bot_info.id
+        CONFIG['Username'] = '@' + bot_info.username
+        logger.info(f"Bot started: {CONFIG['Username']} (ID: {CONFIG['ID']})")
 
-dispatcher.add_handler(telegram.ext.CallbackQueryHandler(process_callback))
+    app.post_init = post_init
 
-updater.start_polling()
-print('Started')
-updater.idle()
-print('Stopping...')
-save_data()
-print('Data saved.')
-print('Stopped.')
+    # Handlers
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("version", version_command))
+    app.add_handler(CommandHandler("setgroup", setgroup_command))
+    app.add_handler(CallbackQueryHandler(process_callback))
+    app.add_handler(MessageHandler(
+        filters.TEXT | filters.AUDIO | filters.PHOTO |
+        filters.VIDEO | filters.VOICE | filters.Document.ALL,
+        process_msg
+    ))
+
+    logger.info("Starting bot with long polling...")
+    app.run_polling(drop_pending_updates=True)
+    save_data()
+    logger.info("Bot stopped, data saved.")
+
+
+if __name__ == '__main__':
+    main()
